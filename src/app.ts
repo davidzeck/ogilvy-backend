@@ -12,6 +12,8 @@ import { corsOptions } from './config/cors.config';
 import { requestLogger } from './middleware/logging.middleware';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import logger from './utils/logger';
+import { initializeDatabase, closeDatabase } from './utils/database';
+import routes from './routes';
 
 // Create Express app
 const app: Express = express();
@@ -33,7 +35,7 @@ app.use(compression());
 app.use(requestLogger);
 
 // Health check endpoint
-app.get('/health', (req: Request, res: Response) => {
+app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({
     success: true,
     message: 'Service is healthy',
@@ -42,8 +44,8 @@ app.get('/health', (req: Request, res: Response) => {
   });
 });
 
-// API routes will be added here
-// app.use(appConfig.apiPrefix, routes);
+// API routes
+app.use(appConfig.apiPrefix, routes);
 
 // 404 handler
 app.use(notFoundHandler);
@@ -53,6 +55,15 @@ app.use(errorHandler);
 
 // Start server
 const startServer = (): void => {
+  // Initialize database
+  try {
+    initializeDatabase();
+    logger.info('✅ Database initialized');
+  } catch (error) {
+    logger.error('❌ Database initialization failed:', error);
+    process.exit(1);
+  }
+
   const server = app.listen(appConfig.port, () => {
     logger.info(`🚀 Server running on port ${appConfig.port}`);
     logger.info(`📝 Environment: ${appConfig.env}`);
@@ -63,6 +74,7 @@ const startServer = (): void => {
   const gracefulShutdown = (signal: string) => {
     logger.info(`${signal} received. Starting graceful shutdown...`);
     server.close(() => {
+      closeDatabase();
       logger.info('Server closed successfully');
       process.exit(0);
     });
