@@ -566,3 +566,206 @@ export const getBranchAgentRanking = (filters: DashboardFilters): Array<{
   }
 };
 
+/**
+ * Get all branches with their performance metrics
+ */
+export const getAllBranchesPerformance = (filters: DashboardFilters): Array<{
+  branchId: number;
+  branchName: string;
+  totalLeads: number;
+  totalRevenue: number;
+  conversionRate: number;
+  avgTurnAroundTime: number;
+}> => {
+  const db = getDatabase();
+
+  let query = `
+    SELECT
+      branches.id as branch_id,
+      branches.name as branch_name,
+      COUNT(leads.id) as total_leads,
+      COALESCE(SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN leads.revenue ELSE 0 END), 0) as total_revenue,
+      SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN 1 ELSE 0 END) as converted_leads,
+      AVG(CASE
+        WHEN leads.contacted_at IS NOT NULL AND leads.created_at IS NOT NULL
+        THEN (julianday(leads.contacted_at) - julianday(leads.created_at))
+        ELSE NULL
+      END) as avg_tat
+    FROM branches
+    LEFT JOIN leads ON branches.id = leads.branch_id
+  `;
+
+  const filterConditions: string[] = [];
+  const filterParams: any[] = [];
+
+  if (filters.product) {
+    filterConditions.push('leads.product = ?');
+    filterParams.push(filters.product);
+  }
+
+  if (filters.segment) {
+    filterConditions.push('leads.segment = ?');
+    filterParams.push(filters.segment);
+  }
+
+  if (filters.campaign) {
+    filterConditions.push('leads.campaign = ?');
+    filterParams.push(filters.campaign);
+  }
+
+  const dateFilter = getDateRangeFilter(filters.dateRange);
+  if (dateFilter) {
+    const dateMatch = dateFilter.match(/'([^']+)'/);
+    if (dateMatch) {
+      filterConditions.push('leads.created_at >= ?');
+      filterParams.push(dateMatch[1]);
+    }
+  }
+
+  if (filterConditions.length > 0) {
+    query += ` WHERE ${filterConditions.join(' AND ')}`;
+  }
+
+  query += `
+    GROUP BY branches.id, branches.name
+    ORDER BY total_revenue DESC, converted_leads DESC
+  `;
+
+  try {
+    const stmt = db.prepare(query);
+    const results = stmt.all(...filterParams) as Array<{
+      branch_id: number;
+      branch_name: string;
+      total_leads: number;
+      total_revenue: number;
+      converted_leads: number;
+      avg_tat: number | null;
+    }>;
+
+    return results.map((row) => {
+      const totalLeads = row.total_leads || 0;
+      const convertedLeads = row.converted_leads || 0;
+      const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
+
+      return {
+        branchId: row.branch_id,
+        branchName: row.branch_name,
+        totalLeads,
+        totalRevenue: Number((row.total_revenue || 0).toFixed(2)),
+        conversionRate: Number(conversionRate.toFixed(2)),
+        avgTurnAroundTime: Number((row.avg_tat || 0).toFixed(2)),
+      };
+    });
+  } catch (error) {
+    logger.error('Error fetching all branches performance:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get calling pattern analysis for insights
+ */
+export const getCallingPatternAnalysis = (filters: DashboardFilters): {
+  bestCallingHour: { hour: number; successRate: number };
+  hourlyStats: Array<{ hour: number; totalCalls: number; successfulCalls: number; successRate: number }>;
+} => {
+  const db = getDatabase();
+
+  let query = `
+    SELECT
+      CAST(strftime('%H', leads.contacted_at) AS INTEGER) as hour,
+      COUNT(*) as total_calls,
+      SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN 1 ELSE 0 END) as successful_calls
+    FROM leads
+    LEFT JOIN branches ON leads.branch_id = branches.id
+    LEFT JOIN agents ON leads.agent_id = agents.id
+    WHERE leads.contacted_at IS NOT NULL
+  `;
+
+  const filterConditions: string[] = [];
+  const filterParams: any[] = [];
+
+  if (filters.branch) {
+    filterConditions.push('branches.name = ?');
+    filterParams.push(filters.branch);
+  }
+
+  if (filters.agent) {
+    filterConditions.push('agents.name = ?');
+    filterParams.push(filters.agent);
+  }
+
+  if (filters.product) {
+    filterConditions.push('leads.product = ?');
+    filterParams.push(filters.product);
+  }
+
+  if (filters.segment) {
+    filterConditions.push('leads.segment = ?');
+    filterParams.push(filters.segment);
+  }
+
+  if (filters.campaign) {
+    filterConditions.push('leads.campaign = ?');
+    filterParams.push(filters.campaign);
+  }
+
+  const dateFilter = getDateRangeFilter(filters.dateRange);
+  if (dateFilter) {
+    const dateMatch = dateFilter.match(/'([^']+)'/);
+    if (dateMatch) {
+      filterConditions.push('leads.created_at >= ?');
+      filterParams.push(dateMatch[1]);
+    }
+  }
+
+  if (filterConditions.length > 0) {
+    query += ` AND ${filterConditions.join(' AND ')}`;
+  }
+
+  query += `
+    GROUP BY hour
+    HAVING total_calls > 0
+    ORDER BY hour
+  `;
+
+  try {
+    const stmt = db.prepare(query);
+    const results = stmt.all(...filterParams) as Array<{
+      hour: number;
+      total_calls: number;
+      successful_calls: number;
+    }>;
+
+    const hourlyStats = results.map((row) => {
+      const totalCalls = row.total_calls || 0;
+      const successfulCalls = row.successful_calls || 0;
+      const successRate = totalCalls > 0 ? (successfulCalls / totalCalls) * 100 : 0;
+
+      return {
+        hour: row.hour,
+        totalCalls,
+        successfulCalls,
+        successRate: Number(successRate.toFixed(2)),
+      };
+    });
+
+    // Find the best calling hour
+    let bestCallingHour = { hour: 9, successRate: 0 };
+    if (hourlyStats.length > 0) {
+      const best = hourlyStats.reduce((max, current) =>
+        current.successRate > max.successRate ? current : max
+      );
+      bestCallingHour = { hour: best.hour, successRate: best.successRate };
+    }
+
+    return {
+      bestCallingHour,
+      hourlyStats,
+    };
+  } catch (error) {
+    logger.error('Error fetching calling pattern analysis:', error);
+    throw error;
+  }
+};
+

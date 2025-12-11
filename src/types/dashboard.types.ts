@@ -74,6 +74,38 @@ export interface RevenueByBranchData {
   target?: number;
 }
 
+export interface ActionableInsight {
+  id: string;
+  title: string;
+  description: string;
+  improvement: number;
+  metric: 'turnAroundTime' | 'conversionRate' | 'revenue' | 'leads';
+  priority?: 'high' | 'medium' | 'low';
+}
+
+export interface BranchRanking {
+  position: number;
+  totalBranches: number;
+  branch?: string;
+  score?: number;
+}
+
+export interface CountryRanking {
+  position: number;
+  totalCountries: number;
+  country?: string;
+  score?: number;
+}
+
+export interface CountryRankingTableRow {
+  rank: number;
+  country: string;
+  branches: number;
+  totalLeads: number;
+  totalRevenue: number;
+  conversionRate: number;
+}
+
 export interface DashboardData {
   kpis: KPI[];
   leadsByBranch: LeadsByBranchData[];
@@ -82,6 +114,10 @@ export interface DashboardData {
   agentPerformance: AgentPerformance[];
   topPerformingAgents: TopPerformingAgent[];
   branchAgentRanking: BranchAgentRanking[];
+  branchRanking?: BranchRanking;
+  countryRanking?: CountryRanking;
+  countryRankingTable?: CountryRankingTableRow[];
+  actionableInsights?: ActionableInsight[];
   filters: DashboardFilters;
 }
 

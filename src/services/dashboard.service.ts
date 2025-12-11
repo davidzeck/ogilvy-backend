@@ -15,6 +15,8 @@ import {
 import { DashboardFilters, DashboardData, KPI } from '../types/dashboard.types';
 import { cache } from '../utils/cache';
 import logger from '../utils/logger';
+import { generateActionableInsights } from './insights.service';
+import { getBranchRanking, getCountryRanking, getCountryRankingTable } from './ranking.service';
 
 /**
  * Calculate KPIs from leads data
@@ -157,6 +159,18 @@ export const getDashboardData = async (filters: DashboardFilters): Promise<Dashb
   // Get branch agent ranking
   const branchAgentRanking = getBranchAgentRanking(filters);
 
+  // Get actionable insights
+  const actionableInsights = generateActionableInsights(filters);
+
+  // Get branch ranking
+  const branchRanking = getBranchRanking(filters);
+
+  // Get country ranking
+  const countryRanking = getCountryRanking(filters);
+
+  // Get country ranking table
+  const countryRankingTable = getCountryRankingTable(filters);
+
   const dashboardData: DashboardData = {
     kpis,
     leadsByBranch,
@@ -165,6 +179,10 @@ export const getDashboardData = async (filters: DashboardFilters): Promise<Dashb
     agentPerformance,
     topPerformingAgents,
     branchAgentRanking,
+    branchRanking,
+    countryRanking,
+    countryRankingTable,
+    actionableInsights,
     filters,
   };
 
