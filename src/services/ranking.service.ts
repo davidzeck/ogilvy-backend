@@ -37,10 +37,10 @@ const calculatePerformanceScore = (
 /**
  * Get branch ranking position
  */
-export const getBranchRanking = (filters: DashboardFilters): BranchRanking => {
+export const getBranchRanking = async (filters: DashboardFilters): Promise<BranchRanking> => {
   try {
     // Get all branches with their performance metrics
-    const allBranches = getAllBranchesPerformance({ ...filters, branch: undefined });
+    const allBranches = await getAllBranchesPerformance({ ...filters, branch: undefined });
 
     if (allBranches.length === 0) {
       return {
@@ -106,10 +106,10 @@ export const getBranchRanking = (filters: DashboardFilters): BranchRanking => {
  * Note: In the current implementation, we assume all branches are in the same country (Kenya)
  * This can be extended when multi-country data is available
  */
-export const getCountryRanking = (filters: DashboardFilters): CountryRanking => {
+export const getCountryRanking = async (filters: DashboardFilters): Promise<CountryRanking> => {
   try {
     // Get all branches performance
-    const allBranches = getAllBranchesPerformance({ ...filters, branch: undefined });
+    const allBranches = await getAllBranchesPerformance({ ...filters, branch: undefined });
 
     if (allBranches.length === 0) {
       return {
@@ -164,9 +164,9 @@ export const getCountryRanking = (filters: DashboardFilters): CountryRanking => 
  * Note: This is simulated data as we currently only have one country (Kenya)
  * In a real multi-country implementation, this would query actual country-level data
  */
-export const getCountryRankingTable = (filters: DashboardFilters): CountryRankingTableRow[] => {
+export const getCountryRankingTable = async (filters: DashboardFilters): Promise<CountryRankingTableRow[]> => {
   try {
-    const allBranches = getAllBranchesPerformance({ ...filters, branch: undefined });
+    const allBranches = await getAllBranchesPerformance({ ...filters, branch: undefined });
 
     if (allBranches.length === 0) {
       return [];

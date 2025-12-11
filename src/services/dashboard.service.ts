@@ -21,8 +21,8 @@ import { getBranchRanking, getCountryRanking, getCountryRankingTable } from './r
 /**
  * Calculate KPIs from leads data
  */
-const calculateKPIs = (filters: DashboardFilters): KPI[] => {
-  const leads = getLeads(filters);
+const calculateKPIs = async (filters: DashboardFilters): Promise<KPI[]> => {
+  const leads = await getLeads(filters);
   const totalLeads = leads.length;
   
   // Calculate Turn Around Time (TAT) - average days from creation to contact
@@ -54,7 +54,7 @@ const calculateKPIs = (filters: DashboardFilters): KPI[] => {
     ...filters,
     dateRange: 'last30days',
   };
-  const previousLeads = getLeads(previousFilters);
+  const previousLeads = await getLeads(previousFilters);
   const previousContactedLeads = previousLeads.filter(lead => lead.contacted_at);
   
   let previousAvgTAT = 0;
@@ -134,10 +134,10 @@ export const getDashboardData = async (filters: DashboardFilters): Promise<Dashb
   logger.info('Fetching fresh dashboard data', { filters });
 
   // Calculate KPIs
-  const kpis = calculateKPIs(filters);
+  const kpis = await calculateKPIs(filters);
 
   // Get leads by status
-  const leadStatus = getLeadsByStatus(filters);
+  const leadStatus = await getLeadsByStatus(filters);
   const totalLeads = leadStatus.reduce((sum, item) => sum + item.count, 0);
   const leadStatusWithPercentage = leadStatus.map(item => ({
     ...item,
@@ -145,31 +145,31 @@ export const getDashboardData = async (filters: DashboardFilters): Promise<Dashb
   }));
 
   // Get leads by branch over time
-  const leadsByBranch = getLeadsByBranchOverTime(filters, 7);
+  const leadsByBranch = await getLeadsByBranchOverTime(filters, 7);
 
   // Get revenue by branch over time
-  const revenueByBranch = getRevenueByBranchOverTime(filters, 7);
+  const revenueByBranch = await getRevenueByBranchOverTime(filters, 7);
 
   // Get agent performance
-  const agentPerformance = getAgentPerformance(filters);
+  const agentPerformance = await getAgentPerformance(filters);
 
   // Get top performing agents
-  const topPerformingAgents = getTopPerformingAgents(filters, 10);
+  const topPerformingAgents = await getTopPerformingAgents(filters, 10);
 
   // Get branch agent ranking
-  const branchAgentRanking = getBranchAgentRanking(filters);
+  const branchAgentRanking = await getBranchAgentRanking(filters);
 
   // Get actionable insights
-  const actionableInsights = generateActionableInsights(filters);
+  const actionableInsights = await generateActionableInsights(filters);
 
   // Get branch ranking
-  const branchRanking = getBranchRanking(filters);
+  const branchRanking = await getBranchRanking(filters);
 
   // Get country ranking
-  const countryRanking = getCountryRanking(filters);
+  const countryRanking = await getCountryRanking(filters);
 
   // Get country ranking table
-  const countryRankingTable = getCountryRankingTable(filters);
+  const countryRankingTable = await getCountryRankingTable(filters);
 
   const dashboardData: DashboardData = {
     kpis,

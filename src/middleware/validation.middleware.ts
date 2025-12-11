@@ -11,18 +11,19 @@ import { sendValidationError } from '../utils/apiResponse';
  * Validates request using express-validator
  */
 export const validate = (validations: ValidationChain[]) => {
-  return async (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Run all validations
     await Promise.all(validations.map((validation) => validation.run(req)));
 
     // Check for errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendValidationError(
+      sendValidationError(
         res,
         'Validation failed',
         errors.array()
       );
+      return;
     }
 
     next();
@@ -32,7 +33,7 @@ export const validate = (validations: ValidationChain[]) => {
 /**
  * Dashboard query parameter validators
  */
-import { query, oneOf } from 'express-validator';
+import { query } from 'express-validator';
 
 export const validateDashboardQuery = [
   query('dateRange')

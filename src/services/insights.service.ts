@@ -10,16 +10,16 @@ import logger from '../utils/logger';
 /**
  * Generate actionable insights based on data patterns
  */
-export const generateActionableInsights = (filters: DashboardFilters): ActionableInsight[] => {
+export const generateActionableInsights = async (filters: DashboardFilters): Promise<ActionableInsight[]> => {
   const insights: ActionableInsight[] = [];
 
   try {
     // Get calling pattern analysis
-    const callingPatterns = getCallingPatternAnalysis(filters);
+    const callingPatterns = await getCallingPatternAnalysis(filters);
     const { bestCallingHour, hourlyStats } = callingPatterns;
 
     // Get leads data for TAT calculation
-    const leads = getLeads(filters);
+    const leads = await getLeads(filters);
     const contactedLeads = leads.filter(lead => lead.contacted_at);
 
     // Calculate current TAT

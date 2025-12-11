@@ -1,11 +1,12 @@
 /**
  * Data Repository
- * Data access layer for dashboard queries
+ * Data access layer for dashboard queries using Prisma ORM
  */
 
-import { getDatabase } from '../utils/database';
+import { prisma } from '../utils/prisma';
 import { DashboardFilters } from '../types/dashboard.types';
 import logger from '../utils/logger';
+import type { Prisma } from '@prisma/client';
 
 export interface LeadRow {
   id: number;
@@ -35,9 +36,9 @@ export interface BranchRow {
 }
 
 /**
- * Get date range filter for SQL queries
+ * Get date range filter for queries
  */
-const getDateRangeFilter = (dateRange?: string): string => {
+const getDateRangeFilter = (dateRange?: string): Date | undefined => {
   const now = new Date();
   let startDate: Date;
 
@@ -56,74 +57,82 @@ const getDateRangeFilter = (dateRange?: string): string => {
       break;
     case 'all':
     default:
-      return '';
+      return undefined;
   }
 
-  return `AND leads.created_at >= '${startDate.toISOString()}'`;
+  return startDate;
 };
 
 /**
  * Build WHERE clause from filters
  */
-const buildWhereClause = (filters: DashboardFilters, includeJoins: boolean = true): { where: string; params: any[] } => {
-  const conditions: string[] = [];
-  const params: any[] = [];
+const buildWhereClause = (filters: DashboardFilters): Prisma.LeadWhereInput => {
+  const where: Prisma.LeadWhereInput = {};
 
   if (filters.branch) {
-    conditions.push(`${includeJoins ? 'branches' : 'leads.branch_id IN (SELECT id FROM branches WHERE name = ?)'}.name = ?`);
-    params.push(filters.branch);
+    where.branch = {
+      name: filters.branch,
+    };
   }
 
   if (filters.agent) {
-    conditions.push(`${includeJoins ? 'agents' : 'leads.agent_id IN (SELECT id FROM agents WHERE name = ?)'}.name = ?`);
-    params.push(filters.agent);
+    where.agent = {
+      name: filters.agent,
+    };
   }
 
   if (filters.product) {
-    conditions.push('leads.product = ?');
-    params.push(filters.product);
+    where.product = filters.product;
   }
 
   if (filters.segment) {
-    conditions.push('leads.segment = ?');
-    params.push(filters.segment);
+    where.segment = filters.segment;
   }
 
   if (filters.campaign) {
-    conditions.push('leads.campaign = ?');
-    params.push(filters.campaign);
+    where.campaign = filters.campaign;
   }
 
   const dateFilter = getDateRangeFilter(filters.dateRange);
-  const whereClause = conditions.length > 0 
-    ? `WHERE ${conditions.join(' AND ')} ${dateFilter}`
-    : dateFilter ? `WHERE 1=1 ${dateFilter}` : '';
+  if (dateFilter) {
+    where.createdAt = {
+      gte: dateFilter,
+    };
+  }
 
-  return { where: whereClause, params };
+  return where;
 };
 
 /**
  * Get all leads with filters
  */
-export const getLeads = (filters: DashboardFilters): LeadRow[] => {
-  const db = getDatabase();
-  const { where, params } = buildWhereClause(filters);
-
-  const query = `
-    SELECT 
-      leads.*,
-      branches.name as branch_name,
-      agents.name as agent_name
-    FROM leads
-    LEFT JOIN branches ON leads.branch_id = branches.id
-    LEFT JOIN agents ON leads.agent_id = agents.id
-    ${where}
-    ORDER BY leads.created_at DESC
-  `;
-
+export const getLeads = async (filters: DashboardFilters): Promise<LeadRow[]> => {
   try {
-    const stmt = db.prepare(query);
-    return stmt.all(...params) as LeadRow[];
+    const leads = await prisma.lead.findMany({
+      where: buildWhereClause(filters),
+      include: {
+        branch: true,
+        agent: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    return leads.map((lead) => ({
+      id: lead.id,
+      branch_id: lead.branchId,
+      agent_id: lead.agentId,
+      status: lead.status,
+      product: lead.product,
+      segment: lead.segment,
+      campaign: lead.campaign,
+      revenue: lead.revenue,
+      created_at: lead.createdAt.toISOString(),
+      updated_at: lead.updatedAt.toISOString(),
+      contacted_at: lead.contactedAt?.toISOString() || null,
+      converted_at: lead.convertedAt?.toISOString() || null,
+    }));
   } catch (error) {
     logger.error('Error fetching leads:', error);
     throw error;
@@ -133,26 +142,25 @@ export const getLeads = (filters: DashboardFilters): LeadRow[] => {
 /**
  * Get leads by status
  */
-export const getLeadsByStatus = (filters: DashboardFilters): Array<{ status: string; count: number }> => {
-  const db = getDatabase();
-  const { where, params } = buildWhereClause(filters);
-
-  const query = `
-    SELECT 
-      leads.status,
-      COUNT(*) as count
-    FROM leads
-    LEFT JOIN branches ON leads.branch_id = branches.id
-    LEFT JOIN agents ON leads.agent_id = agents.id
-    ${where}
-    GROUP BY leads.status
-    ORDER BY count DESC
-  `;
-
+export const getLeadsByStatus = async (
+  filters: DashboardFilters
+): Promise<Array<{ status: string; count: number }>> => {
   try {
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as Array<{ status: string; count: number }>;
-    return results;
+    const leads = await prisma.lead.groupBy({
+      by: ['status'],
+      where: buildWhereClause(filters),
+      _count: true,
+    });
+
+    // Sort by count descending
+    const sorted = leads
+      .map((group) => ({
+        status: group.status,
+        count: group._count,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return sorted;
   } catch (error) {
     logger.error('Error fetching leads by status:', error);
     throw error;
@@ -162,42 +170,42 @@ export const getLeadsByStatus = (filters: DashboardFilters): Array<{ status: str
 /**
  * Get leads by branch over time periods
  */
-export const getLeadsByBranchOverTime = (filters: DashboardFilters, periods: number = 7): Array<{
-  period: string;
-  leads: number;
-  conversionRate: number;
-}> => {
-  const db = getDatabase();
-  const { where, params } = buildWhereClause(filters);
-
-  // Get date range
-  const dateFilter = getDateRangeFilter(filters.dateRange);
+export const getLeadsByBranchOverTime = async (
+  filters: DashboardFilters,
+  periods: number = 7
+): Promise<
+  Array<{
+    period: string;
+    leads: number;
+    conversionRate: number;
+  }>
+> => {
   const now = new Date();
-  const periodDays = dateFilter.includes('last7days') ? 1 : dateFilter.includes('last30days') ? 4 : 7;
-  
+  const periodDays =
+    filters.dateRange === 'last7days' ? 1 : filters.dateRange === 'last30days' ? 4 : 7;
+
   const results: Array<{ period: string; leads: number; conversionRate: number }> = [];
 
   for (let i = periods - 1; i >= 0; i--) {
     const periodStart = new Date(now.getTime() - (i + 1) * periodDays * 24 * 60 * 60 * 1000);
     const periodEnd = new Date(now.getTime() - i * periodDays * 24 * 60 * 60 * 1000);
 
-    const periodQuery = `
-      SELECT 
-        COUNT(*) as total_leads,
-        SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN 1 ELSE 0 END) as converted_leads
-      FROM leads
-      LEFT JOIN branches ON leads.branch_id = branches.id
-      LEFT JOIN agents ON leads.agent_id = agents.id
-      ${where}
-      AND leads.created_at >= ? AND leads.created_at < ?
-    `;
+    const where = buildWhereClause(filters);
+    where.createdAt = {
+      gte: periodStart,
+      lt: periodEnd,
+    };
 
-    const periodParams = [...params, periodStart.toISOString(), periodEnd.toISOString()];
-    const stmt = db.prepare(periodQuery);
-    const result = stmt.get(...periodParams) as { total_leads: number; converted_leads: number };
+    const [totalLeads, convertedLeads] = await Promise.all([
+      prisma.lead.count({ where }),
+      prisma.lead.count({
+        where: {
+          ...where,
+          status: 'Product/Service Sold',
+        },
+      }),
+    ]);
 
-    const totalLeads = result.total_leads || 0;
-    const convertedLeads = result.converted_leads || 0;
     const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
 
     results.push({
@@ -213,17 +221,19 @@ export const getLeadsByBranchOverTime = (filters: DashboardFilters, periods: num
 /**
  * Get revenue by branch over time
  */
-export const getRevenueByBranchOverTime = (filters: DashboardFilters, periods: number = 7): Array<{
-  period: string;
-  revenue: number;
-  target?: number;
-}> => {
-  const db = getDatabase();
-  const { where, params } = buildWhereClause(filters);
-
-  const dateFilter = getDateRangeFilter(filters.dateRange);
+export const getRevenueByBranchOverTime = async (
+  filters: DashboardFilters,
+  periods: number = 7
+): Promise<
+  Array<{
+    period: string;
+    revenue: number;
+    target?: number;
+  }>
+> => {
   const now = new Date();
-  const periodDays = dateFilter.includes('last7days') ? 1 : dateFilter.includes('last30days') ? 4 : 7;
+  const periodDays =
+    filters.dateRange === 'last7days' ? 1 : filters.dateRange === 'last30days' ? 4 : 7;
 
   const results: Array<{ period: string; revenue: number; target?: number }> = [];
 
@@ -231,25 +241,26 @@ export const getRevenueByBranchOverTime = (filters: DashboardFilters, periods: n
     const periodStart = new Date(now.getTime() - (i + 1) * periodDays * 24 * 60 * 60 * 1000);
     const periodEnd = new Date(now.getTime() - i * periodDays * 24 * 60 * 60 * 1000);
 
-    const periodQuery = `
-      SELECT 
-        COALESCE(SUM(leads.revenue), 0) as revenue
-      FROM leads
-      LEFT JOIN branches ON leads.branch_id = branches.id
-      LEFT JOIN agents ON leads.agent_id = agents.id
-      ${where}
-      AND leads.created_at >= ? AND leads.created_at < ?
-      AND leads.status = 'Product/Service Sold'
-    `;
+    const where = buildWhereClause(filters);
+    where.createdAt = {
+      gte: periodStart,
+      lt: periodEnd,
+    };
+    where.status = 'Product/Service Sold';
 
-    const periodParams = [...params, periodStart.toISOString(), periodEnd.toISOString()];
-    const stmt = db.prepare(periodQuery);
-    const result = stmt.get(...periodParams) as { revenue: number };
+    const result = await prisma.lead.aggregate({
+      where,
+      _sum: {
+        revenue: true,
+      },
+    });
+
+    const revenue = result._sum.revenue || 0;
 
     results.push({
       period: `${i + 1}${i === 0 ? 'st' : i === 1 ? 'nd' : i === 2 ? 'rd' : 'th'}`,
-      revenue: Number((result.revenue || 0).toFixed(2)),
-      target: Number(((result.revenue || 0) * 1.1).toFixed(2)), // 10% above revenue as target
+      revenue: Number(revenue.toFixed(2)),
+      target: Number((revenue * 1.1).toFixed(2)), // 10% above revenue as target
     });
   }
 
@@ -259,109 +270,81 @@ export const getRevenueByBranchOverTime = (filters: DashboardFilters, periods: n
 /**
  * Get agent performance data
  */
-export const getAgentPerformance = (filters: DashboardFilters): Array<{
-  agentId: string;
-  agentName: string;
-  leads: number;
-  revenue: number;
-  conversionRate: number;
-  turnAroundTime: number;
-}> => {
-  const db = getDatabase();
-
-  // Build a more complex query that handles filters properly
-  let query = `
-    SELECT 
-      agents.id as agent_id,
-      agents.name as agent_name,
-      COUNT(leads.id) as total_leads,
-      SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN 1 ELSE 0 END) as converted_leads,
-      COALESCE(SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN leads.revenue ELSE 0 END), 0) as revenue,
-      AVG(CASE 
-        WHEN leads.contacted_at IS NOT NULL AND leads.created_at IS NOT NULL 
-        THEN (julianday(leads.contacted_at) - julianday(leads.created_at))
-        ELSE NULL 
-      END) as avg_tat
-    FROM agents
-    LEFT JOIN leads ON agents.id = leads.agent_id
-    LEFT JOIN branches ON leads.branch_id = branches.id
-  `;
-
-  // Build filter conditions
-  const filterConditions: string[] = [];
-  const filterParams: any[] = [];
-
-  if (filters.branch) {
-    filterConditions.push('branches.name = ?');
-    filterParams.push(filters.branch);
-  }
-
-  if (filters.agent) {
-    filterConditions.push('agents.name = ?');
-    filterParams.push(filters.agent);
-  }
-
-  if (filters.product) {
-    filterConditions.push('leads.product = ?');
-    filterParams.push(filters.product);
-  }
-
-  if (filters.segment) {
-    filterConditions.push('leads.segment = ?');
-    filterParams.push(filters.segment);
-  }
-
-  if (filters.campaign) {
-    filterConditions.push('leads.campaign = ?');
-    filterParams.push(filters.campaign);
-  }
-
-  const dateFilter = getDateRangeFilter(filters.dateRange);
-  if (dateFilter) {
-    // Extract the date value from the dateFilter string
-    const dateMatch = dateFilter.match(/'([^']+)'/);
-    if (dateMatch) {
-      filterConditions.push('leads.created_at >= ?');
-      filterParams.push(dateMatch[1]);
-    }
-  }
-
-  if (filterConditions.length > 0) {
-    query += ` WHERE ${filterConditions.join(' AND ')}`;
-  }
-
-  query += `
-    GROUP BY agents.id, agents.name
-    HAVING total_leads > 0
-    ORDER BY revenue DESC
-  `;
-
+export const getAgentPerformance = async (
+  filters: DashboardFilters
+): Promise<
+  Array<{
+    agentId: string;
+    agentName: string;
+    leads: number;
+    revenue: number;
+    conversionRate: number;
+    turnAroundTime: number;
+  }>
+> => {
   try {
-    const stmt = db.prepare(query);
-    const results = stmt.all(...filterParams) as Array<{
-      agent_id: number;
-      agent_name: string;
-      total_leads: number;
-      converted_leads: number;
-      revenue: number;
-      avg_tat: number | null;
-    }>;
+    const where = buildWhereClause(filters);
 
-    return results.map((row) => {
-      const totalLeads = row.total_leads || 0;
-      const convertedLeads = row.converted_leads || 0;
-      const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
-      const turnAroundTime = row.avg_tat || 0;
-
-      return {
-        agentId: String(row.agent_id),
-        agentName: row.agent_name,
-        leads: totalLeads,
-        revenue: Number((row.revenue || 0).toFixed(2)),
-        conversionRate: Number(conversionRate.toFixed(2)),
-        turnAroundTime: Number(turnAroundTime.toFixed(2)),
-      };
+    const agents = await prisma.agent.findMany({
+      where: filters.branch
+        ? {
+            branch: {
+              name: filters.branch,
+            },
+            leads: {
+              some: where,
+            },
+          }
+        : {
+            leads: {
+              some: where,
+            },
+          },
+      include: {
+        leads: {
+          where,
+        },
+      },
     });
+
+    const results = agents
+      .map((agent) => {
+        const totalLeads = agent.leads.length;
+        const convertedLeads = agent.leads.filter((l) => l.status === 'Product/Service Sold').length;
+        const totalRevenue = agent.leads
+          .filter((l) => l.status === 'Product/Service Sold')
+          .reduce((sum, l) => sum + l.revenue, 0);
+
+        // Calculate turn around time
+        const contactedLeads = agent.leads.filter((l) => l.contactedAt);
+        let avgTAT = 0;
+        if (contactedLeads.length > 0) {
+          const totalDays = contactedLeads.reduce((sum, l) => {
+            if (l.contactedAt && l.createdAt) {
+              const days =
+                (l.contactedAt.getTime() - l.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+              return sum + days;
+            }
+            return sum;
+          }, 0);
+          avgTAT = totalDays / contactedLeads.length;
+        }
+
+        const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
+
+        return {
+          agentId: String(agent.id),
+          agentName: agent.name,
+          leads: totalLeads,
+          revenue: Number(totalRevenue.toFixed(2)),
+          conversionRate: Number(conversionRate.toFixed(2)),
+          turnAroundTime: Number(avgTAT.toFixed(2)),
+        };
+      })
+      .filter((agent) => agent.leads > 0)
+      .sort((a, b) => b.revenue - a.revenue);
+
+    return results;
   } catch (error) {
     logger.error('Error fetching agent performance:', error);
     throw error;
@@ -371,106 +354,86 @@ export const getAgentPerformance = (filters: DashboardFilters): Array<{
 /**
  * Get top performing agents
  */
-export const getTopPerformingAgents = (filters: DashboardFilters, limit: number = 10): Array<{
-  id: string;
-  name: string;
-  turnAroundTime: number;
-  conversionRate: number;
-  branch: string;
-}> => {
-  const db = getDatabase();
-
-  // Build query with proper filters
-  let query = `
-    SELECT 
-      agents.id,
-      agents.name,
-      branches.name as branch_name,
-      COUNT(leads.id) as total_leads,
-      SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN 1 ELSE 0 END) as converted_leads,
-      AVG(CASE 
-        WHEN leads.contacted_at IS NOT NULL AND leads.created_at IS NOT NULL 
-        THEN (julianday(leads.contacted_at) - julianday(leads.created_at))
-        ELSE NULL 
-      END) as avg_tat
-    FROM agents
-    LEFT JOIN leads ON agents.id = leads.agent_id
-    LEFT JOIN branches ON agents.branch_id = branches.id
-  `;
-
-  const filterConditions: string[] = [];
-  const filterParams: any[] = [];
-
-  if (filters.branch) {
-    filterConditions.push('branches.name = ?');
-    filterParams.push(filters.branch);
-  }
-
-  if (filters.agent) {
-    filterConditions.push('agents.name = ?');
-    filterParams.push(filters.agent);
-  }
-
-  if (filters.product) {
-    filterConditions.push('leads.product = ?');
-    filterParams.push(filters.product);
-  }
-
-  if (filters.segment) {
-    filterConditions.push('leads.segment = ?');
-    filterParams.push(filters.segment);
-  }
-
-  if (filters.campaign) {
-    filterConditions.push('leads.campaign = ?');
-    filterParams.push(filters.campaign);
-  }
-
-  const dateFilter = getDateRangeFilter(filters.dateRange);
-  if (dateFilter) {
-    // Extract the date value from the dateFilter string
-    const dateMatch = dateFilter.match(/'([^']+)'/);
-    if (dateMatch) {
-      filterConditions.push('leads.created_at >= ?');
-      filterParams.push(dateMatch[1]);
-    }
-  }
-
-  if (filterConditions.length > 0) {
-    query += ` WHERE ${filterConditions.join(' AND ')}`;
-  }
-
-  query += `
-    GROUP BY agents.id, agents.name, branches.name
-    HAVING total_leads > 0
-    ORDER BY converted_leads DESC, avg_tat ASC
-    LIMIT ?
-  `;
-
+export const getTopPerformingAgents = async (
+  filters: DashboardFilters,
+  limit: number = 10
+): Promise<
+  Array<{
+    id: string;
+    name: string;
+    turnAroundTime: number;
+    conversionRate: number;
+    branch: string;
+  }>
+> => {
   try {
-    const stmt = db.prepare(query);
-    const results = stmt.all(...filterParams, limit) as Array<{
-      id: number;
-      name: string;
-      branch_name: string;
-      total_leads: number;
-      converted_leads: number;
-      avg_tat: number | null;
-    }>;
+    const where = buildWhereClause(filters);
 
-    return results.map((row) => {
-      const totalLeads = row.total_leads || 0;
-      const convertedLeads = row.converted_leads || 0;
-      const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
-
-      return {
-        id: String(row.id),
-        name: row.name,
-        turnAroundTime: Number((row.avg_tat || 0).toFixed(2)),
-        conversionRate: Number(conversionRate.toFixed(2)),
-        branch: row.branch_name || 'Unknown',
-      };
+    const agents = await prisma.agent.findMany({
+      where: filters.branch
+        ? {
+            branch: {
+              name: filters.branch,
+            },
+            leads: {
+              some: where,
+            },
+          }
+        : {
+            leads: {
+              some: where,
+            },
+          },
+      include: {
+        branch: true,
+        leads: {
+          where,
+        },
+      },
     });
+
+    const results = agents
+      .map((agent) => {
+        const totalLeads = agent.leads.length;
+        const convertedLeads = agent.leads.filter((l) => l.status === 'Product/Service Sold').length;
+
+        // Calculate turn around time
+        const contactedLeads = agent.leads.filter((l) => l.contactedAt);
+        let avgTAT = 0;
+        if (contactedLeads.length > 0) {
+          const totalDays = contactedLeads.reduce((sum, l) => {
+            if (l.contactedAt && l.createdAt) {
+              const days =
+                (l.contactedAt.getTime() - l.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+              return sum + days;
+            }
+            return sum;
+          }, 0);
+          avgTAT = totalDays / contactedLeads.length;
+        }
+
+        const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
+
+        return {
+          id: String(agent.id),
+          name: agent.name,
+          turnAroundTime: Number(avgTAT.toFixed(2)),
+          conversionRate: Number(conversionRate.toFixed(2)),
+          branch: agent.branch.name,
+          convertedLeads,
+        };
+      })
+      .filter((agent) => agent.convertedLeads > 0)
+      .sort((a, b) => {
+        if (b.convertedLeads !== a.convertedLeads) {
+          return b.convertedLeads - a.convertedLeads;
+        }
+        return a.turnAroundTime - b.turnAroundTime;
+      })
+      .slice(0, limit)
+      .map(({ convertedLeads, ...rest }) => rest);
+
+    return results;
   } catch (error) {
     logger.error('Error fetching top performing agents:', error);
     throw error;
@@ -480,86 +443,56 @@ export const getTopPerformingAgents = (filters: DashboardFilters, limit: number 
 /**
  * Get branch agent ranking
  */
-export const getBranchAgentRanking = (filters: DashboardFilters): Array<{
-  agentName: string;
-  target: number;
-  realised: number;
-  currency?: string;
-}> => {
-  const db = getDatabase();
-
-  // Build query with proper filters
-  let query = `
-    SELECT 
-      agents.name as agent_name,
-      COALESCE(SUM(leads.revenue), 0) * 1.1 as target,
-      COALESCE(SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN leads.revenue ELSE 0 END), 0) as realised
-    FROM agents
-    LEFT JOIN leads ON agents.id = leads.agent_id
-    LEFT JOIN branches ON leads.branch_id = branches.id
-  `;
-
-  const filterConditions: string[] = [];
-  const filterParams: any[] = [];
-
-  if (filters.branch) {
-    filterConditions.push('branches.name = ?');
-    filterParams.push(filters.branch);
-  }
-
-  if (filters.agent) {
-    filterConditions.push('agents.name = ?');
-    filterParams.push(filters.agent);
-  }
-
-  if (filters.product) {
-    filterConditions.push('leads.product = ?');
-    filterParams.push(filters.product);
-  }
-
-  if (filters.segment) {
-    filterConditions.push('leads.segment = ?');
-    filterParams.push(filters.segment);
-  }
-
-  if (filters.campaign) {
-    filterConditions.push('leads.campaign = ?');
-    filterParams.push(filters.campaign);
-  }
-
-  const dateFilter = getDateRangeFilter(filters.dateRange);
-  if (dateFilter) {
-    // Extract the date value from the dateFilter string
-    const dateMatch = dateFilter.match(/'([^']+)'/);
-    if (dateMatch) {
-      filterConditions.push('leads.created_at >= ?');
-      filterParams.push(dateMatch[1]);
-    }
-  }
-
-  if (filterConditions.length > 0) {
-    query += ` WHERE ${filterConditions.join(' AND ')}`;
-  }
-
-  query += `
-    GROUP BY agents.id, agents.name
-    ORDER BY realised DESC
-  `;
-
+export const getBranchAgentRanking = async (
+  filters: DashboardFilters
+): Promise<
+  Array<{
+    agentName: string;
+    target: number;
+    realised: number;
+    currency?: string;
+  }>
+> => {
   try {
-    const stmt = db.prepare(query);
-    const results = stmt.all(...filterParams) as Array<{
-      agent_name: string;
-      target: number;
-      realised: number;
-    }>;
+    const where = buildWhereClause(filters);
 
-    return results.map((row) => ({
-      agentName: row.agent_name,
-      target: Number((row.target || 0).toFixed(2)),
-      realised: Number((row.realised || 0).toFixed(2)),
-      currency: 'KES',
-    }));
+    const agents = await prisma.agent.findMany({
+      where: filters.branch
+        ? {
+            branch: {
+              name: filters.branch,
+            },
+            leads: {
+              some: where,
+            },
+          }
+        : {
+            leads: {
+              some: where,
+            },
+          },
+      include: {
+        leads: {
+          where,
+        },
+      },
+    });
+
+    const results = agents.map((agent) => {
+      const totalRevenue = agent.leads.reduce((sum, l) => sum + l.revenue, 0);
+      const realisedRevenue = agent.leads
+        .filter((l) => l.status === 'Product/Service Sold')
+        .reduce((sum, l) => sum + l.revenue, 0);
+
+      return {
+        agentName: agent.name,
+        target: Number((totalRevenue * 1.1).toFixed(2)),
+        realised: Number(realisedRevenue.toFixed(2)),
+        currency: 'KES',
+      };
+    });
+
+    return results.sort((a, b) => b.realised - a.realised);
   } catch (error) {
     logger.error('Error fetching branch agent ranking:', error);
     throw error;
@@ -569,91 +502,60 @@ export const getBranchAgentRanking = (filters: DashboardFilters): Array<{
 /**
  * Get all branches with their performance metrics
  */
-export const getAllBranchesPerformance = (filters: DashboardFilters): Array<{
-  branchId: number;
-  branchName: string;
-  totalLeads: number;
-  totalRevenue: number;
-  conversionRate: number;
-  avgTurnAroundTime: number;
-}> => {
-  const db = getDatabase();
-
-  let query = `
-    SELECT
-      branches.id as branch_id,
-      branches.name as branch_name,
-      COUNT(leads.id) as total_leads,
-      COALESCE(SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN leads.revenue ELSE 0 END), 0) as total_revenue,
-      SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN 1 ELSE 0 END) as converted_leads,
-      AVG(CASE
-        WHEN leads.contacted_at IS NOT NULL AND leads.created_at IS NOT NULL
-        THEN (julianday(leads.contacted_at) - julianday(leads.created_at))
-        ELSE NULL
-      END) as avg_tat
-    FROM branches
-    LEFT JOIN leads ON branches.id = leads.branch_id
-  `;
-
-  const filterConditions: string[] = [];
-  const filterParams: any[] = [];
-
-  if (filters.product) {
-    filterConditions.push('leads.product = ?');
-    filterParams.push(filters.product);
-  }
-
-  if (filters.segment) {
-    filterConditions.push('leads.segment = ?');
-    filterParams.push(filters.segment);
-  }
-
-  if (filters.campaign) {
-    filterConditions.push('leads.campaign = ?');
-    filterParams.push(filters.campaign);
-  }
-
-  const dateFilter = getDateRangeFilter(filters.dateRange);
-  if (dateFilter) {
-    const dateMatch = dateFilter.match(/'([^']+)'/);
-    if (dateMatch) {
-      filterConditions.push('leads.created_at >= ?');
-      filterParams.push(dateMatch[1]);
-    }
-  }
-
-  if (filterConditions.length > 0) {
-    query += ` WHERE ${filterConditions.join(' AND ')}`;
-  }
-
-  query += `
-    GROUP BY branches.id, branches.name
-    ORDER BY total_revenue DESC, converted_leads DESC
-  `;
-
+export const getAllBranchesPerformance = async (
+  filters: DashboardFilters
+): Promise<
+  Array<{
+    branchId: number;
+    branchName: string;
+    totalLeads: number;
+    totalRevenue: number;
+    conversionRate: number;
+    avgTurnAroundTime: number;
+  }>
+> => {
   try {
-    const stmt = db.prepare(query);
-    const results = stmt.all(...filterParams) as Array<{
-      branch_id: number;
-      branch_name: string;
-      total_leads: number;
-      total_revenue: number;
-      converted_leads: number;
-      avg_tat: number | null;
-    }>;
+    const where = buildWhereClause(filters);
+    delete where.branch; // Remove branch filter to get all branches
 
-    return results.map((row) => {
-      const totalLeads = row.total_leads || 0;
-      const convertedLeads = row.converted_leads || 0;
+    const branches = await prisma.branch.findMany({
+      include: {
+        leads: {
+          where,
+        },
+      },
+    });
+
+    return branches.map((branch) => {
+      const totalLeads = branch.leads.length;
+      const convertedLeads = branch.leads.filter((l) => l.status === 'Product/Service Sold').length;
+      const totalRevenue = branch.leads
+        .filter((l) => l.status === 'Product/Service Sold')
+        .reduce((sum, l) => sum + l.revenue, 0);
+
+      // Calculate turn around time
+      const contactedLeads = branch.leads.filter((l) => l.contactedAt);
+      let avgTAT = 0;
+      if (contactedLeads.length > 0) {
+        const totalDays = contactedLeads.reduce((sum, l) => {
+          if (l.contactedAt && l.createdAt) {
+            const days = (l.contactedAt.getTime() - l.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+            return sum + days;
+          }
+          return sum;
+        }, 0);
+        avgTAT = totalDays / contactedLeads.length;
+      }
+
       const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
 
       return {
-        branchId: row.branch_id,
-        branchName: row.branch_name,
+        branchId: branch.id,
+        branchName: branch.name,
         totalLeads,
-        totalRevenue: Number((row.total_revenue || 0).toFixed(2)),
+        totalRevenue: Number(totalRevenue.toFixed(2)),
         conversionRate: Number(conversionRate.toFixed(2)),
-        avgTurnAroundTime: Number((row.avg_tat || 0).toFixed(2)),
+        avgTurnAroundTime: Number(avgTAT.toFixed(2)),
       };
     });
   } catch (error) {
@@ -665,90 +567,61 @@ export const getAllBranchesPerformance = (filters: DashboardFilters): Array<{
 /**
  * Get calling pattern analysis for insights
  */
-export const getCallingPatternAnalysis = (filters: DashboardFilters): {
+export const getCallingPatternAnalysis = async (
+  filters: DashboardFilters
+): Promise<{
   bestCallingHour: { hour: number; successRate: number };
-  hourlyStats: Array<{ hour: number; totalCalls: number; successfulCalls: number; successRate: number }>;
-} => {
-  const db = getDatabase();
-
-  let query = `
-    SELECT
-      CAST(strftime('%H', leads.contacted_at) AS INTEGER) as hour,
-      COUNT(*) as total_calls,
-      SUM(CASE WHEN leads.status = 'Product/Service Sold' THEN 1 ELSE 0 END) as successful_calls
-    FROM leads
-    LEFT JOIN branches ON leads.branch_id = branches.id
-    LEFT JOIN agents ON leads.agent_id = agents.id
-    WHERE leads.contacted_at IS NOT NULL
-  `;
-
-  const filterConditions: string[] = [];
-  const filterParams: any[] = [];
-
-  if (filters.branch) {
-    filterConditions.push('branches.name = ?');
-    filterParams.push(filters.branch);
-  }
-
-  if (filters.agent) {
-    filterConditions.push('agents.name = ?');
-    filterParams.push(filters.agent);
-  }
-
-  if (filters.product) {
-    filterConditions.push('leads.product = ?');
-    filterParams.push(filters.product);
-  }
-
-  if (filters.segment) {
-    filterConditions.push('leads.segment = ?');
-    filterParams.push(filters.segment);
-  }
-
-  if (filters.campaign) {
-    filterConditions.push('leads.campaign = ?');
-    filterParams.push(filters.campaign);
-  }
-
-  const dateFilter = getDateRangeFilter(filters.dateRange);
-  if (dateFilter) {
-    const dateMatch = dateFilter.match(/'([^']+)'/);
-    if (dateMatch) {
-      filterConditions.push('leads.created_at >= ?');
-      filterParams.push(dateMatch[1]);
-    }
-  }
-
-  if (filterConditions.length > 0) {
-    query += ` AND ${filterConditions.join(' AND ')}`;
-  }
-
-  query += `
-    GROUP BY hour
-    HAVING total_calls > 0
-    ORDER BY hour
-  `;
-
+  hourlyStats: Array<{
+    hour: number;
+    totalCalls: number;
+    successfulCalls: number;
+    successRate: number;
+  }>;
+}> => {
   try {
-    const stmt = db.prepare(query);
-    const results = stmt.all(...filterParams) as Array<{
-      hour: number;
-      total_calls: number;
-      successful_calls: number;
-    }>;
+    const where = buildWhereClause(filters);
+    where.contactedAt = {
+      not: null,
+    };
 
-    const hourlyStats = results.map((row) => {
-      const totalCalls = row.total_calls || 0;
-      const successfulCalls = row.successful_calls || 0;
-      const successRate = totalCalls > 0 ? (successfulCalls / totalCalls) * 100 : 0;
-
-      return {
-        hour: row.hour,
-        totalCalls,
-        successfulCalls,
-        successRate: Number(successRate.toFixed(2)),
-      };
+    const leads = await prisma.lead.findMany({
+      where,
+      select: {
+        contactedAt: true,
+        status: true,
+      },
     });
+
+    // Group by hour
+    const hourlyData: Record<
+      number,
+      { totalCalls: number; successfulCalls: number }
+    > = {};
+
+    leads.forEach((lead) => {
+      if (!lead.contactedAt) return;
+      const hour = lead.contactedAt.getHours();
+      if (!hourlyData[hour]) {
+        hourlyData[hour] = { totalCalls: 0, successfulCalls: 0 };
+      }
+      hourlyData[hour].totalCalls++;
+      if (lead.status === 'Product/Service Sold') {
+        hourlyData[hour].successfulCalls++;
+      }
+    });
+
+    const hourlyStats = Object.entries(hourlyData)
+      .map(([hour, data]) => {
+        const successRate =
+          data.totalCalls > 0 ? (data.successfulCalls / data.totalCalls) * 100 : 0;
+        return {
+          hour: Number(hour),
+          totalCalls: data.totalCalls,
+          successfulCalls: data.successfulCalls,
+          successRate: Number(successRate.toFixed(2)),
+        };
+      })
+      .sort((a, b) => a.hour - b.hour);
 
     // Find the best calling hour
     let bestCallingHour = { hour: 9, successRate: 0 };
@@ -768,4 +641,3 @@ export const getCallingPatternAnalysis = (filters: DashboardFilters): {
     throw error;
   }
 };
-
