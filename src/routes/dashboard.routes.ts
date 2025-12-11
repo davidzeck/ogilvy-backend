@@ -4,10 +4,21 @@
  */
 
 import { Router } from 'express';
-import { getDashboard } from '../controllers/dashboard.controller';
+import { getDashboard, getFilters } from '../controllers/dashboard.controller';
 import { validateDashboardQuery, validate } from '../middleware/validation.middleware';
+import { apiRateLimit } from '../middleware/rateLimit.middleware';
+import { performanceMonitor } from '../middleware/performance.middleware';
 
 const router = Router();
+
+// Apply performance monitoring to all routes
+router.use(performanceMonitor);
+
+/**
+ * GET /api/dashboard/filters
+ * Get available filter options
+ */
+router.get('/filters', apiRateLimit, getFilters);
 
 /**
  * GET /api/dashboard
@@ -15,6 +26,7 @@ const router = Router();
  */
 router.get(
   '/',
+  apiRateLimit,
   validate(validateDashboardQuery),
   getDashboard
 );

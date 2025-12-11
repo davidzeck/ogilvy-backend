@@ -641,3 +641,106 @@ export const getCallingPatternAnalysis = async (
     throw error;
   }
 };
+
+/**
+ * Get unique filter options from the database
+ * Returns distinct values for branches, agents, products, segments, and campaigns
+ */
+export const getFilterOptions = async () => {
+  try {
+    // Get all branches
+    const branches = await prisma.branch.findMany({
+      select: {
+        id: true,
+        name: true,
+      },
+      orderBy: {
+        name: 'asc',
+      },
+    });
+
+    // Get all agents
+    const agents = await prisma.agent.findMany({
+      select: {
+        id: true,
+        name: true,
+        branch: {
+          select: {
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        name: 'asc',
+      },
+    });
+
+    // Get distinct products (excluding null values)
+    const products = await prisma.lead.findMany({
+      where: {
+        product: {
+          not: null,
+        },
+      },
+      select: {
+        product: true,
+      },
+      distinct: ['product'],
+      orderBy: {
+        product: 'asc',
+      },
+    });
+
+    // Get distinct segments (excluding null values)
+    const segments = await prisma.lead.findMany({
+      where: {
+        segment: {
+          not: null,
+        },
+      },
+      select: {
+        segment: true,
+      },
+      distinct: ['segment'],
+      orderBy: {
+        segment: 'asc',
+      },
+    });
+
+    // Get distinct campaigns (excluding null values)
+    const campaigns = await prisma.lead.findMany({
+      where: {
+        campaign: {
+          not: null,
+        },
+      },
+      select: {
+        campaign: true,
+      },
+      distinct: ['campaign'],
+      orderBy: {
+        campaign: 'asc',
+      },
+    });
+
+    return {
+      branches: branches.map(b => ({ value: b.name, label: b.name })),
+      agents: agents.map(a => ({
+        value: a.name,
+        label: `${a.name} (${a.branch.name})`
+      })),
+      products: products
+        .filter(p => p.product !== null)
+        .map(p => ({ value: p.product!, label: p.product! })),
+      segments: segments
+        .filter(s => s.segment !== null)
+        .map(s => ({ value: s.segment!, label: s.segment! })),
+      campaigns: campaigns
+        .filter(c => c.campaign !== null)
+        .map(c => ({ value: c.campaign!, label: c.campaign! })),
+    };
+  } catch (error) {
+    logger.error('Error fetching filter options:', error);
+    throw error;
+  }
+};

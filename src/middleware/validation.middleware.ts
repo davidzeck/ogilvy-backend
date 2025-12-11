@@ -37,38 +37,38 @@ import { query } from 'express-validator';
 
 export const validateDashboardQuery = [
   query('dateRange')
-    .optional()
+    .optional({ values: 'falsy' })
     .isIn(['last7days', 'last30days', 'last90days', 'lastYear', 'all'])
     .withMessage('dateRange must be one of: last7days, last30days, last90days, lastYear, all'),
-  
+
   query('branch')
-    .optional()
+    .optional({ values: 'falsy' })
     .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('branch must be between 1 and 100 characters'),
-  
+    .isLength({ max: 100 })
+    .withMessage('branch must not exceed 100 characters'),
+
   query('agent')
-    .optional()
+    .optional({ values: 'falsy' })
     .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('agent must be between 1 and 100 characters'),
-  
+    .isLength({ max: 100 })
+    .withMessage('agent must not exceed 100 characters'),
+
   query('product')
-    .optional()
+    .optional({ values: 'falsy' })
     .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('product must be between 1 and 100 characters'),
-  
+    .isLength({ max: 100 })
+    .withMessage('product must not exceed 100 characters'),
+
   query('segment')
-    .optional()
+    .optional({ values: 'falsy' })
     .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('segment must be between 1 and 100 characters'),
-  
+    .isLength({ max: 100 })
+    .withMessage('segment must not exceed 100 characters'),
+
   query('campaign')
-    .optional()
+    .optional({ values: 'falsy' })
     .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('campaign must be between 1 and 100 characters'),
+    .isLength({ max: 100 })
+    .withMessage('campaign must not exceed 100 characters'),
 ];
 
